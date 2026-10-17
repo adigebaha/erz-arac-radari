@@ -8,7 +8,7 @@ from datetime import datetime
 TELEGRAM_BOT_TOKEN = "8208251806:AAGN1N9VvcDK-CKHE63n3jHXvkRQ9H67ReU"
 TELEGRAM_CHAT_ID = "1580732505"
 LOKASYON = "İstanbul Havalimanı"
-BIZIM_FIRMA = "Green Motion"  # Sistemde firmanın tam adı nasıl geçiyorsa buraya yaz (örn: "Metal Filo")
+BIZIM_FIRMA = "Green Motion"  
 
 # ==========================================
 # 2. BİLDİRİM GÖNDERME FONKSİYONU
@@ -65,33 +65,26 @@ def piyasa_verilerini_cek():
         response = requests.post(url, headers=headers, json=payload)
         veri = response.json()
         
-        # Yolcu360 API yapısına göre araçları çekiyoruz
         araclar = veri.get("data", [])
         
         if not araclar:
-            print("API'den araç listesi boş döndü. (Tarih geçmiş veya token süresi dolmuş olabilir)")
             return None
             
         bizim_fiyat = None
         rakip_fiyatlar = []
 
         for arac in araclar:
-            # API yapısındaki firma adını ve fiyatı alıyoruz (Genel JSON yapısına uygun güvenli arama)
             firma_adi = arac.get("supplier", {}).get("name", "")
             fiyat = arac.get("price", {}).get("total", 0)
             
             if fiyat > 0:
                 if BIZIM_FIRMA.lower() in firma_adi.lower():
-                    # Bizim firmaya ait birden fazla araç olabilir, en ucuzunu baz alalım
                     if bizim_fiyat is None or fiyat < bizim_fiyat:
                         bizim_fiyat = fiyat
                 else:
                     rakip_fiyatlar.append(fiyat)
 
-        if not rakip_fiyatlar:
-            rakip_min_fiyat = 0
-        else:
-            rakip_min_fiyat = min(rakip_fiyatlar)
+        rakip_min_fiyat = min(rakip_fiyatlar) if rakip_fiyatlar else 0
 
         return {
             "bizim_fiyat": bizim_fiyat,
@@ -104,22 +97,23 @@ def piyasa_verilerini_cek():
         return None
 
 # ==========================================
-# 4. ANALİZ VE KARAR MOTORU
+# 4. ANALİZ VE KARAR MOTORU (GÜNCELLENDİ)
 # ==========================================
 def radar_analizi_yap():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 {LOKASYON} için gerçek Yolcu360 verileri taranıyor...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 {LOKASYON} için Yolcu360 taranıyor...")
     
     piyasa = piyasa_verilerini_cek()
     
+    # HATA DURUMUNDA BİLGİ VER
     if not piyasa:
-        print("Tarama yapılamadı, sistem kapanıyor.")
+        mesaj = "❌ *SİSTEM UYARISI*\n\nYolcu360'tan veri çekilemedi. Güvenlik jetonunun (Token) süresi dolmuş veya tarihler geçmiş olabilir."
+        patrona_bildirim_gonder(mesaj)
         return
 
     bizim_fiyat = piyasa["bizim_fiyat"]
     rakip_min = piyasa["rakip_min_fiyat"]
     
-    print(f"Toplam listelenen araç: {piyasa['toplam_arac']}")
-    
+    # STOK YOKSA BİLGİ VER
     if bizim_fiyat is None:
         mesaj = (
             f"⚠️ *STOK UYARISI - {LOKASYON}*\n\n"
@@ -129,25 +123,29 @@ def radar_analizi_yap():
         patrona_bildirim_gonder(mesaj)
         return
 
-    print(f"Bizim En Düşük Fiyatımız: {bizim_fiyat} TL | Rakip En Düşük: {rakip_min} TL")
-
-    # KURAL: Bizim fiyatımız piyasadaki en düşük fiyattan %5'ten daha pahalıysa uyar
+    # FİYAT KIRILDIYSA UYAR
     if rakip_min > 0 and bizim_fiyat > (rakip_min * 1.05):
         fiyat_farki = bizim_fiyat - rakip_min
-        
         mesaj = (
             f"⚠️ *REKABET UYARISI - {LOKASYON}*\n\n"
             f"Rakipler fiyat kırdı! Sizin en uygun aracınız *{bizim_fiyat} TL* iken, "
             f"pazardaki en düşük fiyat *{rakip_min} TL* seviyesine indi.\n\n"
-            f"💡 *Aksiyon:* Rekabette kalmak ve üst sıralara çıkmak için fiyatınızı yaklaşık *{fiyat_farki} TL* indirmeyi değerlendirin."
+            f"💡 *Aksiyon:* Rekabette kalmak için fiyatınızı *{fiyat_farki} TL* indirmeyi değerlendirin."
         )
         patrona_bildirim_gonder(mesaj)
+    
+    # HER ŞEY YOLUNDAYSA BİLE RAPOR AT (YENİ EKLENEN KISIM)
     else:
-        print(f"✅ Fiyatınız rekabetçi ({bizim_fiyat} TL). Rakipler sizden ucuz değil. Bildirim atılmadı.")
+        mesaj = (
+            f"✅ *DURUM RAPORU - {LOKASYON}*\n\n"
+            f"Saatlik piyasa taraması yapılmıştır. Fiyatlarınız şu an rekabetçi seviyededir.\n\n"
+            f"🟢 *Sizin Fiyatınız:* {bizim_fiyat} TL\n"
+            f"🔵 *En Düşük Rakip:* {rakip_min} TL\n"
+            f"🚗 *Taranan Araç Sayısı:* {piyasa['toplam_arac']} adet"
+        )
+        patrona_bildirim_gonder(mesaj)
 
 # ==========================================
 # 5. ÇALIŞTIRMA KOMUTU
 # ==========================================
-print("🚀 Araç Kiralama Radar Botu uyandı...")
 radar_analizi_yap()
-print("🏁 Tarama tamamlandı, sistem kapanıyor.")
