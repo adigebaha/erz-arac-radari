@@ -1,5 +1,6 @@
 import requests
 import json
+import re
 from datetime import datetime, timedelta
 import time
 import os
@@ -62,14 +63,95 @@ def _arac_listesi_bul(veri):
     return None
 
 
+# Yolcu360 tutarları kuruş cinsinden döner (örn. 806072 = 8.060,72 TL).
+# Yolcu360 sitesinde aynı aramadaki fiyatla karşılaştırıp doğrulayın.
+FIYAT_BOLEN = 100
+
+FIRMA_ANAHTARLARI = ("supplier", "vendor", "company", "provider", "rentalCompany", "agency", "partner")
+
+
+def _normalize(metin):
+    """Karşılaştırma için: Türkçe karakterleri sadeleştir, küçük harfe çevir, harf/rakam dışını at."""
+    tablo = str.maketrans("ıİğĞüÜşŞöÖçÇ", "iigguussoocc")
+    s = str(metin).translate(tablo).lower()
+    return "".join(ch for ch in s if ch.isalnum())
+
+
+def _firma_adaylari(arac):
+    """Aracın hangi firmaya ait olduğunu gösteren tüm ipuçlarını döndürür."""
+    adaylar = []
+
+    def isim(v):
+        if isinstance(v, dict):
+            v = v.get("name") or v.get("title")
+        return str(v) if v else None
+
+    # 1) Doğrudan alanlar (eski/olası yapı)
+    for k in FIRMA_ANAHTARLARI:
+        n = isim(arac.get(k))
+        if n:
+            adaylar.append(n)
+
+    # 2) integration.code (base64) içindeki hookName, örn. "avis"
+    ent = arac.get("integration")
+    if isinstance(ent, dict) and ent.get("code"):
+        cozulmus = _b64_coz(ent["code"]) or ""
+        m = re.search(r'"hookName"\s*:\s*"([^"]+)"', cozulmus)
+        if m:
+            adaylar.append(m.group(1))
+
+    # 3) details içinde firma bilgisi taşıyan alanlar (ofis bilgileri hariç)
+    def tara(obj, derinlik=0):
+        if derinlik > 5:
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in ("appointment", "openingHours", "phones"):
+                    continue
+                if k in FIRMA_ANAHTARLARI:
+                    n = isim(v)
+                    if n:
+                        adaylar.append(n)
+                tara(v, derinlik + 1)
+        elif isinstance(obj, list):
+            for v in obj[:5]:
+                tara(v, derinlik + 1)
+
+    tara(arac.get("details"))
+    return list(dict.fromkeys(adaylar))  # tekrarları at, sırayı koru
+
+
 def _firma_adi(arac):
-    sup = arac.get("supplier") or arac.get("vendor") or arac.get("company") or {}
-    if isinstance(sup, dict):
-        return str(sup.get("name") or sup.get("title") or "")
-    return str(sup)
+    return " | ".join(_firma_adaylari(arac))
+
+
+def _bizim_mi(adaylar):
+    hedef = _normalize(BIZIM_FIRMA)
+    return any(hedef in _normalize(a) for a in adaylar)
+
+
+def _tutar_oku(obj, *yol):
+    for k in yol:
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(k)
+    return obj
 
 
 def _fiyat(arac):
+    """Müşterinin ödeyeceği toplam tutarı TL olarak döndürür; okunamazsa 0."""
+    # Güncel yapı: tutarlar kuruş cinsinden
+    for yol in (("pricing", "display", "paymentTotal", "amount", "amount"),
+                ("pricing", "display", "preDiscountTotal", "amount", "amount"),
+                ("pricing", "display", "net", "amount", "amount")):
+        try:
+            v = float(_tutar_oku(arac, *yol))
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return v / FIYAT_BOLEN
+
+    # Eski yapı (yedek)
     fiyat = arac.get("price")
     if isinstance(fiyat, dict):
         for k in ("total", "totalPrice", "amount", "value"):
@@ -211,24 +293,25 @@ def piyasa_verilerini_cek():
 
     # --- Fiyat analizi ---
     bizim_fiyat = None
-    rakip_fiyatlar = []
-    firmalar = set()
+    rakipler = []   # (fiyat, firma)
+    firmalar = {}   # firma -> en düşük fiyat
 
     for arac in araclar:
         if not isinstance(arac, dict):
             continue
-        firma = _firma_adi(arac)
-        firmalar.add(firma)
+        adaylar = _firma_adaylari(arac)
+        firma = " | ".join(adaylar)
         fiyat = _fiyat(arac)
 
         if fiyat > 0:
-            if BIZIM_FIRMA.lower() in firma.lower():
+            firmalar[firma] = min(fiyat, firmalar.get(firma, fiyat))
+            if _bizim_mi(adaylar):
                 if bizim_fiyat is None or fiyat < bizim_fiyat:
                     bizim_fiyat = fiyat
             else:
-                rakip_fiyatlar.append(fiyat)
+                rakipler.append((fiyat, firma))
 
-    if bizim_fiyat is None and not rakip_fiyatlar:
+    if bizim_fiyat is None and not rakipler:
         ornek = araclar[0] if isinstance(araclar[0], dict) else {}
         # Tam örneği dosyaya da kaydet (scriptin çalıştığı klasöre)
         try:
@@ -253,9 +336,17 @@ def piyasa_verilerini_cek():
         return None, (f"{len(araclar)} araç döndü ama fiyat okunamadı (yanıt formatı değişmiş).\n"
                       f"İlk aracın yapı özeti:\n{ozet[:2800]}")
 
+    rakip_min, rakip_firma = min(rakipler) if rakipler else (0, "")
+
+    if DEBUG:
+        print("[DEBUG] Firma bazında en düşük fiyatlar (TL):")
+        for f, p in sorted(firmalar.items(), key=lambda x: x[1]):
+            print(f"   {p:>10,.0f}  {f}")
+
     return {
         "bizim_fiyat": bizim_fiyat,
-        "rakip_min_fiyat": min(rakip_fiyatlar) if rakip_fiyatlar else 0,
+        "rakip_min_fiyat": rakip_min,
+        "rakip_min_firma": rakip_firma,
         "toplam_arac": len(araclar),
         "firmalar": sorted(f for f in firmalar if f),
     }, None
@@ -280,7 +371,7 @@ def radar_analizi_yap():
 
     if bizim_fiyat is None:
         mesaj = (f"⚠️ *STOK UYARISI - {LOKASYON}*\n\n"
-                 f"Şu an *{BIZIM_FIRMA}* firmasına ait müsait araç bulunmuyor!\n"
+                 f"*{BIZIM_FIRMA}* ile eşleşen araç bulunamadı (araç yok ya da firma adı farklı yazılıyor olabilir).\n"
                  f"Bölgedeki en ucuz rakip fiyatı: {rakip_min:.0f} TL.\n"
                  f"Listede görünen firmalar: {', '.join(piyasa['firmalar'])}")
         patrona_bildirim_gonder(mesaj)
@@ -290,13 +381,13 @@ def radar_analizi_yap():
         fiyat_farki = bizim_fiyat - rakip_min
         mesaj = (f"⚠️ *REKABET UYARISI - {LOKASYON}*\n\n"
                  f"Rakipler fiyat kırdı! Sizin en uygun aracınız *{bizim_fiyat:.0f} TL* iken, "
-                 f"pazardaki en düşük fiyat *{rakip_min:.0f} TL*.\n"
+                 f"pazardaki en düşük fiyat *{rakip_min:.0f} TL* ({piyasa['rakip_min_firma']}).\n"
                  f"💡 Rekabette kalmak için fiyatınızı *{fiyat_farki:.0f} TL* indirmeyi değerlendirin.")
         patrona_bildirim_gonder(mesaj)
     else:
         mesaj = (f"✅ *DURUM RAPORU - {LOKASYON}*\n\n"
-                 f"🟢 *Sizin Fiyatınız:* {bizim_fiyat:.0f} TL\n"
-                 f"🔵 *En Düşük Rakip:* {rakip_min:.0f} TL\n"
+                 f"🟢 *Sizin Fiyatınız:* {bizim_fiyat:.0f} TL (3 günlük toplam)\n"
+                 f"🔵 *En Düşük Rakip:* {rakip_min:.0f} TL ({piyasa['rakip_min_firma']})\n"
                  f"🚗 *Taranan Araç:* {piyasa['toplam_arac']} adet")
         patrona_bildirim_gonder(mesaj)
 
