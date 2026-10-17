@@ -91,6 +91,34 @@ def _fiyat(arac):
         return 0.0
 
 
+ATLANACAK_ANAHTARLAR = {"searchRequest", "searchRequestV2", "posAliases", "campaignID",
+                        "cmsKey", "searchAlgorithm", "searchAssignment", "searchID"}
+
+
+def _yapi_ozeti(obj, yol="", derinlik=0, satirlar=None):
+    """Bir JSON nesnesini 'yol = değer' satırlarına düzleştirir (tanı amaçlı)."""
+    if satirlar is None:
+        satirlar = []
+    if derinlik > 7:
+        satirlar.append(f"{yol} = ...")
+        return satirlar
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in ATLANACAK_ANAHTARLAR:
+                continue
+            _yapi_ozeti(v, f"{yol}.{k}" if yol else str(k), derinlik + 1, satirlar)
+    elif isinstance(obj, list):
+        if not obj:
+            satirlar.append(f"{yol} = []")
+        for i, v in enumerate(obj[:2]):
+            _yapi_ozeti(v, f"{yol}[{i}]", derinlik + 1, satirlar)
+        if len(obj) > 2:
+            satirlar.append(f"{yol} = (+{len(obj) - 2} eleman daha)")
+    else:
+        satirlar.append(f"{yol} = {str(obj)[:60]}")
+    return satirlar
+
+
 def piyasa_verilerini_cek():
     """(sonuç, hata) döndürür. Başarılıysa hata None, başarısızsa sonuç None olur."""
     url = "https://api2.yolcu360.com/api/v1/search-api/search/point/"
@@ -188,9 +216,18 @@ def piyasa_verilerini_cek():
                 rakip_fiyatlar.append(fiyat)
 
     if bizim_fiyat is None and not rakip_fiyatlar:
-        return None, (f"{len(araclar)} araç döndü ama hiçbirinden fiyat okunamadı "
-                      f"(yanıt formatı değişmiş olabilir). İlk araç anahtarları: "
-                      f"{list(araclar[0].keys()) if isinstance(araclar[0], dict) else type(araclar[0]).__name__}")
+        ornek = araclar[0] if isinstance(araclar[0], dict) else {}
+        # Tam örneği dosyaya da kaydet (scriptin çalıştığı klasöre)
+        try:
+            with open("yolcu360_ornek_yanit.json", "w", encoding="utf-8") as f:
+                json.dump(araclar[:2], f, ensure_ascii=False, indent=2)
+            print("[TANI] İlk 2 aracın tam yanıtı yolcu360_ornek_yanit.json dosyasına yazıldı.")
+        except Exception as e:
+            print(f"[TANI] Örnek dosya yazılamadı: {e}")
+        ozet = "\n".join(_yapi_ozeti(ornek))
+        print("[TANI] İlk aracın yapısı:\n" + ozet)
+        return None, (f"{len(araclar)} araç döndü ama fiyat okunamadı (yanıt formatı değişmiş).\n"
+                      f"İlk aracın yapı özeti:\n{ozet[:2800]}")
 
     return {
         "bizim_fiyat": bizim_fiyat,
