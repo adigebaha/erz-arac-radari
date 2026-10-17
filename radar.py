@@ -92,7 +92,20 @@ def _fiyat(arac):
 
 
 ATLANACAK_ANAHTARLAR = {"searchRequest", "searchRequestV2", "posAliases", "campaignID",
-                        "cmsKey", "searchAlgorithm", "searchAssignment", "searchID"}
+                        "cmsKey", "searchAlgorithm", "searchAssignment", "searchID",
+                        # Ofis adresi/saat/telefon gibi gürültü (fiyatla ilgisi yok)
+                        "appointment", "openingHours", "phones", "rating", "images"}
+
+
+def _b64_coz(metin):
+    """Base64 (urlsafe veya normal) metni çözüp okunabilir kısmını döndürür."""
+    import base64
+    try:
+        s = str(metin)
+        s += "=" * (-len(s) % 4)
+        return base64.urlsafe_b64decode(s).decode("utf-8", errors="replace")
+    except Exception:
+        return None
 
 
 def _yapi_ozeti(obj, yol="", derinlik=0, satirlar=None):
@@ -224,7 +237,18 @@ def piyasa_verilerini_cek():
             print("[TANI] İlk 2 aracın tam yanıtı yolcu360_ornek_yanit.json dosyasına yazıldı.")
         except Exception as e:
             print(f"[TANI] Örnek dosya yazılamadı: {e}")
-        ozet = "\n".join(_yapi_ozeti(ornek))
+        # pricing en başa; ardından geri kalan alanlar
+        satirlar = _yapi_ozeti({k: ornek[k] for k in ("pricing",) if k in ornek})
+        satirlar += _yapi_ozeti({k: v for k, v in ornek.items() if k != "pricing"})
+
+        # Şifreli görünen kod alanlarını çöz (firma/ürün bilgisi taşıyor olabilir)
+        entegrasyon = ornek.get("integration")
+        if isinstance(entegrasyon, dict) and entegrasyon.get("code"):
+            satirlar.append(f"[çözülmüş] integration.code = {(_b64_coz(entegrasyon['code']) or '')[:250]}")
+        if ornek.get("code"):
+            satirlar.append(f"[çözülmüş] code = {(_b64_coz(ornek['code']) or '')[:250]}")
+
+        ozet = "\n".join(satirlar)
         print("[TANI] İlk aracın yapısı:\n" + ozet)
         return None, (f"{len(araclar)} araç döndü ama fiyat okunamadı (yanıt formatı değişmiş).\n"
                       f"İlk aracın yapı özeti:\n{ozet[:2800]}")
