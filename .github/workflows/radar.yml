@@ -7,7 +7,7 @@ on:
 
 jobs:
   tara-ve-bildir:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Kodları Getir
         uses: actions/checkout@v4
@@ -18,7 +18,7 @@ jobs:
           python-version: '3.10'
 
       - name: Gerekli Kütüphaneleri Yükle
-        run: pip install requests
+        run: pip install requests schedule
 
       - name: Radarı Çalıştır
         run: python radar.py
