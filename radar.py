@@ -47,8 +47,8 @@ def piyasa_verilerini_cek():
 
     payload = {
         "version": "v3",
-        "checkInDateTime": "2026-10-18T10:00:00+03:00",
-        "checkOutDateTime": "2026-10-21T10:00:00+03:00",
+        "checkInDateTime": "2026-10-19T10:00:00+03:00",
+        "checkOutDateTime": "2026-10-22T10:00:00+03:00",
         "age": "30-65",
         "language": "tr",
         "currency": "TRY",
