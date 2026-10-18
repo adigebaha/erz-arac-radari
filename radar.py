@@ -402,7 +402,7 @@ def ana_dongu():
     print("  (Bu pencereyi arka plana alabilirsiniz)")
     print("==================================================\n")
 
-    BEKLEME_SURESI = 3600
+    BEKLEME_SURESI = 36000
 
     while True:
         try:
